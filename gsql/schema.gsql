@@ -1,0 +1,82 @@
+// =============================================================
+// PDS Trust Layer — TigerGraph schema
+// Models the ration supply chain as a graph so shop-level fraud
+// patterns (diversion, ghost beneficiaries, repeat offenders)
+// become queryable instead of buried in per-row SQLite logs.
+// =============================================================
+
+CREATE GRAPH PDS_TrustGraph()
+
+USE GRAPH PDS_TrustGraph
+
+// ---------- Vertices ----------
+
+CREATE VERTEX FairPriceShop (
+  PRIMARY_ID shop_id STRING,
+  name STRING,
+  region STRING,
+  registered_at DATETIME,
+  anomaly_score FLOAT DEFAULT "0.0"
+) WITH STATS="OUTDEGREE_BY_EDGETYPE"
+
+CREATE VERTEX Beneficiary (
+  PRIMARY_ID rfid_uid STRING,
+  first_seen DATETIME,
+  region STRING
+) WITH STATS="OUTDEGREE_BY_EDGETYPE"
+
+CREATE VERTEX DispatchBatch (
+  PRIMARY_ID batch_id STRING,
+  item STRING,
+  quantity_g FLOAT,
+  dispatch_date DATETIME,
+  data_hash STRING,
+  status STRING DEFAULT "in_transit"
+) WITH STATS="OUTDEGREE_BY_EDGETYPE"
+
+CREATE VERTEX DistributionEvent (
+  PRIMARY_ID event_id STRING,
+  item STRING,
+  weight_g FLOAT,
+  change_g FLOAT,
+  timestamp DATETIME,
+  event_hash STRING,
+  verified BOOL DEFAULT "false"
+) WITH STATS="OUTDEGREE_BY_EDGETYPE"
+
+CREATE VERTEX Complaint (
+  PRIMARY_ID complaint_id STRING,
+  raised_at DATETIME,
+  reason STRING
+) WITH STATS="OUTDEGREE_BY_EDGETYPE"
+
+// ---------- Edges ----------
+
+// A dispatch batch is delivered to a shop
+CREATE DIRECTED EDGE DISPATCHED_TO (
+  FROM DispatchBatch, TO FairPriceShop,
+  delivered_at DATETIME
+) WITH REVERSE_EDGE="RECEIVED_BATCH"
+
+// A distribution event happened at a shop, drawn from a specific batch
+CREATE DIRECTED EDGE DISTRIBUTED_AT (
+  FROM DistributionEvent, TO FairPriceShop
+) WITH REVERSE_EDGE="HOSTED_EVENT"
+
+CREATE DIRECTED EDGE FROM_BATCH (
+  FROM DistributionEvent, TO DispatchBatch
+) WITH REVERSE_EDGE="SUPPLIED_EVENT"
+
+// A distribution event is claimed by a beneficiary (RFID tap)
+CREATE DIRECTED EDGE CLAIMED_BY (
+  FROM DistributionEvent, TO Beneficiary
+) WITH REVERSE_EDGE="CLAIMED"
+
+// Complaints target a shop and optionally a specific event
+CREATE DIRECTED EDGE COMPLAINT_AGAINST (
+  FROM Complaint, TO FairPriceShop
+) WITH REVERSE_EDGE="HAS_COMPLAINT"
+
+CREATE DIRECTED EDGE COMPLAINT_ABOUT_EVENT (
+  FROM Complaint, TO DistributionEvent
+) WITH REVERSE_EDGE="EVENT_COMPLAINT"

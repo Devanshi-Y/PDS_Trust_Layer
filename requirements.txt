@@ -1,0 +1,9 @@
+fastapi>=0.100.0
+uvicorn>=0.23.0
+requests>=2.31.0
+qrcode[pil]>=7.4.2
+pydantic>=2.0.0
+
+# Optional — only needed if you wire up real on-chain anchoring
+# in hash_chain.anchor_to_chain() later
+# web3>=6.0.0

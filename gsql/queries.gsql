@@ -1,0 +1,77 @@
+// =============================================================
+// PDS Trust Layer — analytics queries
+// Install with: gsql gsql/queries.gsql   (after schema.gsql)
+// Then: gsql "INSTALL QUERY ALL"
+// =============================================================
+
+USE GRAPH PDS_TrustGraph
+
+// Full journey of one dispatch batch: which shop(s) it reached,
+// and every distribution event drawn from it.
+CREATE OR REPLACE QUERY getBatchJourney(STRING batch_id) FOR GRAPH PDS_TrustGraph {
+  SetAccum<EDGE> @@path;
+  batch = {DispatchBatch.*};
+  batch = SELECT b FROM batch:b WHERE b.batch_id == batch_id;
+
+  shops = SELECT s
+          FROM batch:b -(DISPATCHED_TO:e)- FairPriceShop:s
+          ACCUM @@path += e;
+
+  events = SELECT ev
+           FROM batch:b -(reverse_FROM_BATCH:e)- DistributionEvent:ev
+           ACCUM @@path += e;
+
+  PRINT batch, shops, events;
+}
+
+// Shops whose anomaly_score exceeds a threshold — the "watch list"
+CREATE OR REPLACE QUERY getAnomalousShops(FLOAT threshold) FOR GRAPH PDS_TrustGraph {
+  shops = {FairPriceShop.*};
+  result = SELECT s
+           FROM shops:s
+           WHERE s.anomaly_score > threshold
+           ORDER BY s.anomaly_score DESC;
+  PRINT result;
+}
+
+// Shops ranked by number of complaints filed against them
+CREATE OR REPLACE QUERY getRepeatOffenders(INT top_n) FOR GRAPH PDS_TrustGraph {
+  TYPEDEF TUPLE<STRING shop_id, STRING name, INT complaint_count> ShopComplaint;
+  HeapAccum<ShopComplaint>(top_n, complaint_count DESC) @@heap;
+
+  shops = {FairPriceShop.*};
+  result = SELECT s
+           FROM shops:s -(HAS_COMPLAINT:e)- Complaint:c
+           ACCUM @@heap += ShopComplaint(s.shop_id, s.name, 1)
+           POST-ACCUM @@heap += ShopComplaint(s.shop_id, s.name, 0); // ensure zero-complaint shops aren't silently dropped by ACCUM semantics
+
+  PRINT @@heap;
+}
+
+// Complaints and low-stock alerts clustered by region — for the admin heat map
+CREATE OR REPLACE QUERY getRegionalClusters(STRING region) FOR GRAPH PDS_TrustGraph {
+  shops = {FairPriceShop.*};
+  regionalShops = SELECT s FROM shops:s WHERE s.region == region;
+
+  complaints = SELECT c
+               FROM regionalShops:s -(HAS_COMPLAINT:e)- Complaint:c;
+
+  PRINT regionalShops, complaints;
+}
+
+// A beneficiary who has claimed distribution events at an unusual number
+// of distinct shops in a short window can indicate a cloned/shared RFID tag.
+CREATE OR REPLACE QUERY getSuspiciousBeneficiaries(INT distinct_shop_threshold) FOR GRAPH PDS_TrustGraph {
+  SumAccum<INT> @shopCount;
+  SetAccum<STRING> @seenShops;
+
+  beneficiaries = {Beneficiary.*};
+
+  step1 = SELECT b
+          FROM beneficiaries:b -(CLAIMED:e1)- DistributionEvent:ev -(DISTRIBUTED_AT:e2)- FairPriceShop:s
+          ACCUM b.@seenShops += s.shop_id
+          POST-ACCUM b.@shopCount = b.@seenShops.size();
+
+  result = SELECT b FROM step1:b WHERE b.@shopCount >= distinct_shop_threshold;
+  PRINT result;
+}
